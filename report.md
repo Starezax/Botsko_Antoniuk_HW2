@@ -48,6 +48,12 @@ For evaluation we used COCO mAP. The evalutaion scores were assigned with use he
 ### Decision to leave the change: 
 We did only one change at a time, kept only if hold-out mAP went up. The seed noise is 0.0067 mAP, so smaller gain of a training change could have been just a lucky thing. Inference changes use the same trained weights, so they have no seed noise.
 
+### Training protocol
+We use COCO pretrained weights, 8 epochs for training, train on each 10th frame of the 50 training clips, long side of image is 1024 px.
+- Faster R-CNN: SGD, lr 0.005. 
+- RetinaNet: SGD, lr 0.0025. 
+- Ultralytics: optimizer auto
+
 
 ## Models
 
@@ -57,7 +63,6 @@ We have chosen the ResNet-50 FPN v2, in a nutshell it works in 2 stages: first i
 
 Baseline was 0.2339, and after trying different approaches we chose adding more RPN proposals and GIoU loss, that gave the mAP if 0.2451
 
-The problem with it was that 26% of small objects were never proposed in the first stage, so they were skipped by model right away
 
 | Run | mAP | AP50 | AP small | ms per frame |
 |---|---|---|---|---|
@@ -67,6 +72,10 @@ The problem with it was that 26% of small objects were never proposed in the fir
 | GIoU loss (kept) | 0.2451 | 0.4881 | 0.0502 | 165 |
 
 ![](images/frcnn_failures.png)
+
+![](images/frcnn_failure_cases.png)
+
+Analysis of result: it missed small objects, as an explae a crowded crossing where persons and motors are only a few pixels tall and overlap, also sometimes it wrongly classified objects, as an example street market where tricycles, carts and stalls look alike
 
 ### One-stage Anchor-based
 
@@ -81,7 +90,7 @@ We tried several approaches: anchors fitted to the data, lower IoU, thresholds a
 | Lower IoU thresholds 0.4 / 0.3 | 0.1454 | 0.2704 | 0.0189 |
 | NWD loss | 0.1763 | 0.3403 | 0.0234 |
 
-The problem with it is that it finds only 19 percent of small objects against 40% for Faster R-CNN.
+about 110000 anchors per frame were classified, and only about 500 are positive (513 with the default anchors). The anchors fitted to the data halved the positives to 265 per frame. Medium and large objects got about 7 positives instead of 24 to 28, so mAP fell.
 
 ### One-stage Anchor-free
 
@@ -101,8 +110,6 @@ The problem with it, is that in input size 1024, 70% of objects were smaller tha
 
 For this we have chosen RT-DETR-l. It is a transformer detector: it ahs a CNN backbone, than a transformer decoder with set of querries, and each querry than predicts at most one object. During training its predictions are being matched to objects on to one, so there are only 1.9 % duplicates, thats why it doesn't use NMS at all.
 
-Results: Baseline with 300 queries: 0.3109, 500 queries: 0.3123, 500 queries + 500 denoising queries: 0.3170, the best of all four models
-
 | Run | mAP | AP50 | AP small | ms per frame |
 |---|---|---|---|---|
 | Baseline, 300 queries | 0.3109 | 0.5777 | 0.0852 | 101 |
@@ -110,6 +117,8 @@ Results: Baseline with 300 queries: 0.3109, 500 queries: 0.3123, 500 queries + 5
 | 500 queries + 500 denoising queries | 0.3170 | 0.5949 | 0.0929 | 102 |
 
 ![](images/rtdetr_curves.png)
+
+So the thing is that it did not fully converged in 8 epochs, as the curve is still rising, the small objects are detected greatly.
 
 
 ## Our pipeline
@@ -121,7 +130,7 @@ The realization of our pipeline is following:
 - Detection: RT-DETR-l (500 queries, 500 denoising queries, trained on all 63 clips)
 - Other detectors: Faster R-CNN, RetinaNet and YOLO also run on the same frame. For each RT-DETR box, we recorded whether they found the same object and with what score.
 - Temporal features: we used RT-DETR boxes on whole clip and than linked them into tracks with Hungarian matching on IoU. Each box gets the track mean score over window of 10 frams and short gaps in tracks are filled.
-- Metamodel: we have trained the metamodel (we chose te simpliest logistic regression) that takes features of each box and than outputs the final score the score of RT-DETR, temporal score, and scores from other detectors
+- Metamodel: we have trained the metamodel (we chose te simpliest logistic regression) that takes features of each box and than outputs the final score the score of RT-DETR, temporal score, and scores from other detectors. About training, we train it on one row per each RT-DETR box on validation frames, and the target is the part of IoU where the tresholds are from 0.5 to 0.95 and than evaluated on OOF with the folds be clip, and than refitted on all rows and applied to test boxes
 - Two final variants: submission_meta_noyolo.csv uses the RT-DETR score, track features and Faster R-CNN features, submission_meta.csv uses the scores of all detectors (RT-DETR, temporal, YOLO, Faster R-CNN, RetinaNet)
 - Ouput: boxes are scaled back to the original frame size and written to the submission file
 
@@ -171,7 +180,7 @@ AP per class:
 | Logistic metamodel, all detectors | model | 0.3416 (out of fold) | 0.3516 | 0.2905 | yes |
 | Logistic metamodel, without YOLO | model | 0.3397 (out of fold) | 0.3537 | 0.2957 | yes |
 
-Metamodel weights (standardized features):
+Metamodel weights, variant with all detectors (submission_meta.csv), standardized features:
 
 | Feature | Weight |
 |---|---|
